@@ -55,8 +55,8 @@ jobs:
           echo "📦 使用 yacd 分支: $YACD_BRANCH"
           git clone --depth 1 --branch "$YACD_BRANCH" https://github.com/haishanh/yacd.git yacd-src
 
-      - name: 安装 pnpm
-        run: npm install -g pnpm
+      - name: 安装 pnpm 7 (兼容 yacd lockfile)
+        run: npm install -g pnpm@7
 
       - name: 安装 yacd 依赖
         working-directory: yacd-src
