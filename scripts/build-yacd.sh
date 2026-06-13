@@ -16,7 +16,7 @@ fi
 echo "==> 安装 yacd 依赖..."
 cd "$YACD_DIR"
 npm install -g pnpm@7
-pnpm install --frozen-lockfile
+pnpm install
 
 echo "==> 构建 yacd 生产版本..."
 pnpm build

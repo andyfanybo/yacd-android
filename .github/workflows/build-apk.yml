@@ -60,7 +60,7 @@ jobs:
 
       - name: 安装 yacd 依赖
         working-directory: yacd-src
-        run: pnpm install --frozen-lockfile
+        run: pnpm install
 
       - name: 构建 yacd 生产版本
         working-directory: yacd-src
