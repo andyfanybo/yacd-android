@@ -1,0 +1,178 @@
+name: Build Android APK
+
+on:
+  # 手动触发编译
+  workflow_dispatch:
+    inputs:
+      yacd_version:
+        description: 'yacd 版本/分支 (留空使用 master)'
+        required: false
+        default: 'master'
+      build_type:
+        description: 'APK 类型'
+        required: true
+        type: choice
+        options:
+          - debug
+          - release
+        default: 'debug'
+
+  # 推送 tag 时自动编译 release
+  push:
+    tags:
+      - 'v*'
+
+# 权限设置
+permissions:
+  contents: write
+  actions: read
+
+env:
+  # Android SDK 相关环境变量
+  ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+  ANDROID_HOME: /usr/local/lib/android/sdk
+
+jobs:
+  build:
+    name: 编译 yacd Android APK
+    runs-on: ubuntu-latest
+
+    steps:
+      # ==================== 1. 检出代码 ====================
+      - name: 检出 yacd-android 项目
+        uses: actions/checkout@v4
+
+      # ==================== 2. 设置 Node.js ====================
+      - name: 设置 Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # ==================== 3. 克隆并构建 yacd 前端 ====================
+      - name: 克隆 yacd 源码
+        run: |
+          YACD_BRANCH="${{ github.event.inputs.yacd_version || 'master' }}"
+          echo "📦 使用 yacd 分支: $YACD_BRANCH"
+          git clone --depth 1 --branch "$YACD_BRANCH" https://github.com/haishanh/yacd.git yacd-src
+
+      - name: 安装 pnpm
+        run: npm install -g pnpm
+
+      - name: 安装 yacd 依赖
+        working-directory: yacd-src
+        run: pnpm install --frozen-lockfile
+
+      - name: 构建 yacd 生产版本
+        working-directory: yacd-src
+        run: pnpm build
+
+      - name: 复制构建产物到 Capacitor www 目录
+        run: |
+          rm -rf www
+          cp -r yacd-src/public www
+          echo "✅ www 目录已就绪:"
+          ls -lh www/
+
+      # ==================== 4. 设置 Capacitor ====================
+      - name: 安装 Capacitor 依赖
+        run: npm install
+
+      - name: 添加 Android 平台
+        run: npx cap add android
+
+      - name: 同步 Web 资源到 Android
+        run: npx cap sync android
+
+      # ==================== 5. 设置 Java ====================
+      - name: 设置 Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      # ==================== 6. 设置 Android SDK ====================
+      - name: 设置 Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platforms;android-34 build-tools;34.0.0 platforms;android-35 build-tools;35.0.0'
+
+      - name: 接受 SDK 许可协议
+        run: |
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses 2>/dev/null || \
+          yes | $ANDROID_HOME/cmdline-tools/*/bin/sdkmanager --licenses 2>/dev/null || true
+
+      - name: 创建 local.properties
+        run: |
+          echo "sdk.dir=$ANDROID_HOME" > android/local.properties
+          echo "✅ local.properties 已创建"
+
+      # ==================== 7. 配置 Gradle ====================
+      - name: 设置 Gradle 可执行权限
+        run: chmod +x android/gradlew
+
+      - name: 配置 Gradle 缓存
+        uses: gradle/actions/setup-gradle@v3
+
+      # ==================== 8. 编译 APK ====================
+      - name: 编译 Debug APK
+        if: ${{ github.event.inputs.build_type != 'release' && !startsWith(github.ref, 'refs/tags/') }}
+        run: |
+          cd android
+          ./gradlew assembleDebug --stacktrace
+        env:
+          ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
+          ANDROID_HOME: ${{ env.ANDROID_HOME }}
+
+      - name: 编译 Release APK
+        if: ${{ github.event.inputs.build_type == 'release' || startsWith(github.ref, 'refs/tags/') }}
+        run: |
+          cd android
+          ./gradlew assembleRelease --stacktrace
+        env:
+          ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
+          ANDROID_HOME: ${{ env.ANDROID_HOME }}
+
+      # ==================== 9. 上传 APK 产物 ====================
+      - name: 确定 APK 路径
+        id: apk_path
+        run: |
+          BUILD_TYPE="${{ github.event.inputs.build_type || 'debug' }}"
+          if [ "$BUILD_TYPE" = "release" ] || [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            echo "path=android/app/build/outputs/apk/release/app-release-unsigned.apk" >> $GITHUB_OUTPUT
+            echo "type=release" >> $GITHUB_OUTPUT
+          else
+            echo "path=android/app/build/outputs/apk/debug/app-debug.apk" >> $GITHUB_OUTPUT
+            echo "type=debug" >> $GITHUB_OUTPUT
+          fi
+
+      - name: 上传 APK 为 Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: yacd-android-${{ steps.apk_path.outputs.type }}
+          path: ${{ steps.apk_path.outputs.path }}
+          retention-days: 30
+
+      # ==================== 10. 创建 Release (仅 tag 推送时) ====================
+      - name: 创建 GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "yacd Android ${{ github.ref_name }}"
+          files: ${{ steps.apk_path.outputs.path }}
+          body: |
+            ## 🤖 yacd Android APK (云端自动编译)
+
+            - **编译时间**: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+            - **构建编号**: #${{ github.run_number }}
+
+            ### 📲 安装说明
+            1. 下载 APK 到 Android 设备
+            2. 开启「设置 → 安全 → 允许安装未知来源应用」
+            3. 安装 APK
+            4. 打开 yacd，输入 Clash API 地址即可管理代理
+
+            ### ⚠️ 注意
+            - 此 APK 为 WebView 封装版本，功能与原版 yacd 网页完全一致
+            - 连接本地 Clash 请使用 `http://127.0.0.1:9090`（确保手机 Clash 已运行）
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
